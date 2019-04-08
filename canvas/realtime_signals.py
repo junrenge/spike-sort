@@ -1,46 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# vispy: gallery 2
-# Copyright (c) Vispy Development Team. All Rights Reserved.
-# Distributed under the (new) BSD License. See LICENSE.txt for more info.
-
-"""
-Multiple real-time digital signals with GLSL-based clipping.
-"""
 import numpy
 import threading
-import time
+
+from scipy import signal
 
 from vispy import gloo
 from vispy import app
 import numpy as np
-import math
-
-#数据
-# Number of cols and rows in the table.
-nrows = 64
-ncols = 1
-i = 0
-# Number of signals.
-m = nrows*ncols
-# Number of samples per signal.
-n = 40000
-# Various signal amplitudes.
-amplitudes = .1 + .2 * np.random.rand(m, 1).astype(np.float32)
-# Generate the signals as a (m, n) array.
-y = 0 * np.random.randn(m, n).astype(np.float32)
-k = 0
-s = 1000
-#颜色
-# Color of each vertex (TODO: make it more efficient by using a GLSL-based
-# color map and the index).
-color = np.repeat(np.random.uniform(size=(m, 3), low=.5, high=.9),
-                  n, axis=0).astype(np.float32)
-# Signal 2D index of each vertex (row and col) and x-index (sample index
-# within each signal).
-index = np.c_[np.repeat(np.repeat(np.arange(ncols), nrows), n),
-              np.repeat(np.tile(np.arange(nrows), ncols), n),
-              np.tile(np.arange(n), m)].astype(np.float32)
 
 VERT_SHADER = """
 #version 120
@@ -92,7 +59,6 @@ void main() {
     v_ab = vec4(a, b);
 }
 """
-
 FRAG_SHADER = """
 #version 120
 
@@ -116,10 +82,30 @@ void main() {
 }
 """
 
+nrows = 64
+ncols = 1
+data_array_point = 0
+m = nrows*ncols
+n = 40000
+amplitudes = .1 + .2 * np.random.rand(m, 1).astype(np.float32)
+y = 0 * np.random.randn(m, n).astype(np.float32)
+k = 0
+data_step = 400
+
+color = .3+0*np.repeat(np.random.uniform(size=(m, 3), low=.5, high=.9),
+                  n, axis=0).astype(np.float32)
+
+index = np.c_[np.repeat(np.repeat(np.arange(ncols), nrows), n),
+              np.repeat(np.tile(np.arange(nrows), ncols), n),
+              np.tile(np.arange(n), m)].astype(np.float32)
+index[:,1] = nrows - 1 -index[:,1]
+
 class Canvas(app.Canvas):
     def __init__(self):
         app.Canvas.__init__(self, title='Use your wheel to zoom!',
-                            keys='interactive')
+                            keys='interactive', resizable=True)
+        self.size = (400, 2500)
+        self.position = (0, 0)
         self.program = gloo.Program(VERT_SHADER, FRAG_SHADER)
         self.program['a_position'] = y.reshape(-1, 1)
         self.program['a_color'] = color
@@ -129,58 +115,83 @@ class Canvas(app.Canvas):
         self.program['u_n'] = n
 
         gloo.set_viewport(0, 0, *self.physical_size)
-        self._timer = app.Timer('auto', connect=self.on_timer, start=True, )
+        self._timer = app.Timer(1/100, connect=self.on_timer, start=True, )
         gloo.set_state(clear_color='black', blend=True,
                        blend_func=('src_alpha', 'one_minus_src_alpha'))
         self.show()
 
         self.data = 0 * np.random.randn(m, 1).astype(np.float32)
-        self.data_thread = threading.Thread(target=self.data_thread)
-        self.data_thread.start()
+        self.data_threa = threading.Thread(target=self.data_thread)
+        # self.data_threa.start()
 
     def data_thread(self):
-        global i
+        global data_array_point
         while True:
-            if len(self.data[0]) > 100000:
-                self.data = self.data[:,:1]
-                i = 0
+            if len(self.data[0]) > 50000:
+                self.data = self.data[:, 50000:]
+                data_array_point = 0
                 print('存储，改变i值')
-            self.data = numpy.hstack((self.data,(amplitudes * np.random.randn(m, 100))))
+            self.data = numpy.hstack((self.data, (amplitudes * np.random.randn(m, 100))))
 
-    def on_resize(self, event):
-        gloo.set_viewport(0, 0, *event.physical_size)
+    def recv(self, data):
+        global data_array_point
+        if len(self.data[0]) > 50000:
+            self.data = self.data[:, 50000:]
+            data_array_point = 0
+            print('存储，改变i值')
+        # self.data = numpy.hstack((self.data, data.transpose()))
+        # print(len(self.data[0]))
+        b, a = signal.iirfilter(5, 300 / 40000 * 2,
+                                analog=False, btype='highpass',
+                                ftype='butter', output='ba')
+        filtedData = signal.filtfilt(b, a, data.T) * 10
+        self.data = numpy.hstack((self.data, filtedData))
 
-    def on_mouse_wheel(self, event):
-        dx = np.sign(event.delta[1]) * .05
-        scale_x, scale_y = self.program['u_scale']
-        scale_x_new, scale_y_new = (scale_x * math.exp(2.5*dx),
-                                    scale_y * math.exp(0.0*dx))
-        self.program['u_scale'] = (max(1, scale_x_new), max(1, scale_y_new))
-        self.update()
+    # def on_resize(self, event):
+    #     print('traceview resize')
+    #     gloo.set_viewport(0, 0, *event.physical_size)
+
+    # def on_mouse_wheel(self, event):
+    #     dx = np.sign(event.delta[1]) * .05
+    #     scale_x, scale_y = self.program['u_scale']
+    #     scale_x_new, scale_y_new = (scale_x * math.exp(.0 * dx),
+    #                                 scale_y * math.exp(2.5 * dx))
+    #     self.program['u_scale'] = (max(1, scale_x_new), max(1, scale_y_new))
+    #     self.update()
 
     def on_mouse_press(self, event):
         print("mouse pressed", self.physical_size, event.pos)
 
     def on_timer(self, event):
-        global k, s, i
-        if i*s+s < len(self.data[0]):
+        global k, data_step, data_array_point, y
+        # print('real_time timer')
+        if data_array_point*data_step+data_step < len(self.data[0]):
+            # print(y)
             self.program['a_position'].set_data(y.ravel().astype(np.float32))
             self.update()
-            # y[:, k:(k+s)] = amplitudes * np.random.randn(m, s)
-            y[:, k:(k + s)] = self.data[:, i*s:i*s+s]
-            k = (k + s)%n#实现推进绘图的效果
-            i += 1
-            # y[:, :-k] = y[:, k:]
-            # y[:, -k:] =  amplitudes * np.random.randn(m, k)
-            # y[:, k%100:(k+10)%100] = amplitudes * np.random.randn(m, 10)
+            try:
+                y[:, k:(k + data_step)] = self.data[:, data_array_point*data_step:(data_array_point+1)*data_step]
+            except Exception as e:
+                print(e.__traceback__)
+                print(k, data_step, data_array_point)
+            k = (k + data_step) % n
+            data_array_point += 1
 
     def on_draw(self, event):
         gloo.clear(depth=10)
+        gloo.set_viewport(0, 0, *self.physical_size)
         self.program.draw('line_strip')
 
-    def paramchange(self,p):
-        print("canvas paramchanged!",p.props)
+    def color_change(self, i):
+        global color
+        print("real time", i)
+        sub_color = np.repeat(np.array([[0, 0, 0.9]]), n, axis=0).astype(np.float32)
+        color = .3 + 0 * color
+        color[(i-1) * n:i * n, :] = sub_color
+        self.program['a_color'] = color
+
 
 if __name__ == '__main__':
     c = Canvas()
+    print(c.native)
     app.run()

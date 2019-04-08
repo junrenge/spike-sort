@@ -1,27 +1,13 @@
+import threading
+import numpy
+from pyacq import register_node_type, Node
+from utils.get_waves import get_waves, get_waves_2
 from vispy import gloo
 from vispy import app
 import numpy as np
 import math
-
-nrows = 8
-ncols = 8
-N_wf = 10
-m = nrows * ncols
-n = 50
-
-amplitudes = .1 + .2 * np.random.rand(m, 1).astype(np.float32)
-y = 0 * amplitudes * np.random.randn(m, n * N_wf).astype(np.float32)
-
-color = 1+0*np.repeat(np.random.uniform(size=(m * N_wf, 3), low=.5, high=.9),
-                  n, axis=0).astype(np.float32)
-
-index = np.c_[
-    np.tile(np.repeat(np.repeat(np.arange(ncols), nrows), n), N_wf),
-    np.repeat(np.tile(np.arange(nrows), ncols * N_wf), n),
-    np.tile(np.arange(n), m * N_wf),
-    np.repeat(np.arange(N_wf), n * m),
-].astype(np.float32)
-# [print(ind_v) for ind_v in index]
+from scipy import signal
+from canvas.selected_waveforms import Canvas as SelectedWaveCanvas
 
 VERT_SHADER = """
 #version 120
@@ -99,68 +85,129 @@ void main() {
 }
 """
 
+nrows = 8
+ncols = 8
+wavenum_per_channel = 50
+channel_num = nrows * ncols
+wave_len = 50
+pointnum_per_channel = wave_len * wavenum_per_channel
+data_step = 400
+data_array_point = 0
 
-class Canvas(app.Canvas):
+amplitudes = .1 + .2 * np.random.rand(channel_num, 1).astype(np.float32)
+
+y = np.random.randint(0, 1, size=[channel_num, 50, 50]).astype(np.float32)
+ylist = y.tolist()
+
+
+color = 1 + np.zeros((channel_num, pointnum_per_channel, 3)).astype(np.float32)#将color改成和y的维度一样的。
+color = color.tolist()
+
+t=[]
+for i in range(nrows):
+    for j in range(ncols):
+        for wavenum in range(wavenum_per_channel):
+            for point in range(wave_len):
+                t.append([j, nrows - 1 - i, point, wavenum])
+
+index = np.array(t).astype(np.float32)
+print(1)
+
+class WaveCanvas(app.Canvas, Node):
+    _output_specs = {'test': {}}
+
     def __init__(self):
         app.Canvas.__init__(self, title='Use your wheel to zoom!',
                             keys='interactive')
 
         self.shape = (nrows, ncols)
-        self.counter = 0
-        self.N_wf = N_wf
-        self.n = n
-
         self.program = gloo.Program(VERT_SHADER, FRAG_SHADER)
-        self.program['a_position'] = y.reshape(-1, 1)
+        # self.program['a_position'] = y.reshape(-1, 1)
+        self.program['a_position'] = ylist
         self.program['a_color'] = color
         self.program['a_index'] = index
         self.program['u_scale'] = (1., 1.)
         self.program['u_size'] = self.shape
-        self.program['u_n'] = n
+        self.program['u_n'] = wave_len
 
         gloo.set_viewport(0, 0, *self.physical_size)
-        self._timer = app.Timer(1, connect=self.on_timer, start=True, )
+        self._timer = app.Timer(1/100, connect=self.on_timer, start=True, )
         gloo.set_state(preset='additive', clear_color='black', blend=True,
                        blend_func=('src_alpha', 'one_minus_src_alpha'))
         gloo.set_clear_depth(10)
         self.show()
-        self.index = 0.1
+        self.data = 0 * np.random.randn(channel_num, 1).astype(np.float32)
+        self.data_threa = threading.Thread(target=self.datathread)
+        # self.data_threa.start()
+        self.head = 0
+        self.num = 1
 
-    def on_resize(self, event):
-        gloo.set_viewport(0, 0, *event.physical_size)
-        self.update()
+        self.sub_view = SelectedWaveCanvas()
+
+    def get_sub_view(self):
+        return self.sub_view
+
+    def datathread(self):
+        global data_array_point
+        while True:
+            if len(self.data[0]) > 50000:
+                self.data = self.data[:, 50000:]
+                data_array_point = 0
+                print('存储，改变i值')
+                gloo.clear(color=True, depth=True)
+            b, a = signal.butter(8, [0.06, 0.6], 'bandpass')
+            filtedData = signal.filtfilt(b, a, amplitudes * np.random.randn(channel_num, 100))
+            self.data = numpy.hstack((self.data, filtedData))
+
+    def recv(self, data):
+        global data_array_point
+        if len(self.data[0]) > 50000:
+            self.data = self.data[:, 50000:]
+            data_array_point = 0
+            print('存储，改变i值')
+        # b, a = signal.butter(8, [0.06, 0.6], 'bandpass')
+        # filtedData = signal.filtfilt(b, a, data.transpose())
+        b, a = signal.iirfilter(5, 300 / 40000 * 2,
+                                analog=False, btype='highpass',
+                                ftype='butter',output='ba')
+        filtedData = signal.filtfilt(b, a, data.T) * 10
+        self.data = numpy.hstack((self.data, filtedData))
+
+    def on_timer(self, event):
+        # global data_step, data_array_point, k, ylist,color
+        global data_step, data_array_point, k
+        if data_array_point * data_step + data_step < len(self.data[0]):
+            self.temp = self.data[:, data_array_point * data_step: data_array_point * data_step + data_step]
+            y,col = get_waves_2(self.temp, channel_num, ylist, color)
+            self.program['a_position'].set_data(y)
+            self.program['a_color'] = col
+            self.update()
+            self.sub_view.recv(y[(self.num-1)*50: self.num*50],col[(self.num-1)*50*50: self.num*50*50])
+
+            data_array_point += 1
 
     def on_mouse_wheel(self, event):
         dx = np.sign(event.delta[1]) * .05
         scale_x, scale_y = self.program['u_scale']
-        scale_x_new, scale_y_new = (scale_x * math.exp(2.5 * dx),
-                                    scale_y * math.exp(0.0 * dx))
+        scale_x_new, scale_y_new = (scale_x * math.exp(.0 * dx),
+                                    scale_y * math.exp(2.5 * dx))
         self.program['u_scale'] = (max(1, scale_x_new), max(1, scale_y_new))
         self.update()
 
     def on_mouse_press(self, event):
-        print("mouse pressed", self.physical_size, event.pos)
-
-    def on_timer(self, event):
-        y = amplitudes * np.random.randn(m, n).astype(np.float32)
-        # y = self.index + 0*amplitudes * np.random.randn(m, n).astype(np.float32)
-        # y[:,10] = 0.3
-        self.index += 0.1
-        offset = self.counter * self.shape[0] * self.shape[1] * self.n
-        self.counter += 1
-        if self.counter == self.N_wf:
-            self.counter = 0
-        if self.index >= 1.0:
-            self.index = 0
-
-        self.program['a_position'].set_subdata(y.ravel().astype(np.float32), offset=offset)
-        self.update()
+        global color
+        i = int(event.pos[0]/(int(self.physical_size[0])/nrows))+1
+        j = int(event.pos[1]/(int(self.physical_size[1])/ncols))
+        num = j * ncols + i
+        self.num = num
+        print(num)
 
     def on_draw(self, event):
         gloo.clear(color=True, depth=True)
+        gloo.set_viewport(0, 0, *self.physical_size)
         self.program.draw('line_strip')
 
-
+register_node_type(WaveCanvas)
 if __name__ == '__main__':
-    c = Canvas()
+    c = WaveCanvas()
     app.run()

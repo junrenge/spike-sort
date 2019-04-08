@@ -24,6 +24,7 @@ class ObjectWidget(QtWidgets.QWidget):
     signal_objet_changed = QtCore.pyqtSignal(ObjectParam, name='objectChanged')
     signal_start = QtCore.pyqtSignal(int)
     signal_save = QtCore.pyqtSignal(int)
+    signal_stop = QtCore.pyqtSignal(int)
 
     def __init__(self, parent=None, param=None):
         super(ObjectWidget, self).__init__(parent)
@@ -69,11 +70,14 @@ class ObjectWidget(QtWidgets.QWidget):
         self.b.clicked.connect(self.save)
         self.b1 = QtWidgets.QPushButton('start')
         self.b1.clicked.connect(self.start)
+        self.b2 = QtWidgets.QPushButton('stop')
+        self.b2.clicked.connect(self.stop)
 
         vbox = QtWidgets.QVBoxLayout()
         hbox = QtWidgets.QVBoxLayout()
         hbox.addWidget(self.b1)
         hbox.addWidget(self.b)
+        hbox.addWidget(self.b2)
         hbox.addWidget(self.gb_c)
 
         hbox.addStretch(1.0)
@@ -89,7 +93,11 @@ class ObjectWidget(QtWidgets.QWidget):
         self.signal_save.emit(1)
 
     def start(self, option):
-        self.signal_start.emit(1)
+        # self.signal_start.emit(1)
+        pass
+
+    def stop(self, option):
+        self.signal_stop.emit(1)
 
     def spinbox(self, option):
         keys = map(lambda x: x[0], self.param.list_param)
